@@ -6,7 +6,7 @@
 #    By: mfetoui <marvin@42.fr>                     +#+  +:+       +#+         #
 #                                                 +#+#+#+#+#+   +#+            #
 #    Created: 2019/09/19 17:45:21 by mfetoui           #+#    #+#              #
-#    Updated: 2019/09/25 15:54:41 by mfetoui          ###   ########.fr        #
+#    Updated: 2019/09/25 18:54:53 by mfetoui          ###   ########.fr        #
 #                                                                              #
 # **************************************************************************** #
 
@@ -16,6 +16,7 @@ import re
 import time
 import signal
 import socket
+import struct 
 
 #def spawn_process():
 #def error_checkr();
@@ -40,7 +41,7 @@ options_sample = {
 
 processes = dict()
 
-class process():
+class Process():
     def __init__(self, name):
         self.name = name
         self.options = dict(options_sample)
@@ -62,25 +63,23 @@ class process():
         os.dup2(stdout_fd, 1)
         os.dup2(stderr_fd, 2)
 
-class daemon():
+
+class ClientSocket():
     def __init__(self):
         self.sock_address = "/tmp/sockd"
         self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.connection = None
-        self.address = None
-    def server(self):
-        os.remove(sock_address)
-        self.socket.bind(sock_address)
-        self.socket.listen(1)
-        self.connection, self.address = self.socket.accept()
-    def client(self):
         self.socket.connect(self.sock_address)
-    def send_data(self, msg):
-        self.socket.sendall(str.encode(msg))
-    def recv_data(self):
-        return self.connection.recv(1024)
-
-
+    def close(self):
+        self.socket.close()
+    def send(self, msg):
+        length = struct.pack('!I', len(msg))
+        self.socket.sendall(length)
+        self.socket.sendall(msg.encode())
+    def recv(self):
+        n = self.socket.recv(4)
+        length, = struct.unpack('!I', n)
+        message = self.socket.recv(length)
+        return message.decode()
 
 def spawn_processes():
     for proc_name in processes:
@@ -102,7 +101,7 @@ def processes_obj(configfile):
             name = proc_name
             if num_procs > 1:
                 name += ':' + str(i)
-            processes[name] = process(name) 
+            processes[name] = Process(name) 
             for option in configfile.options(section):
                 processes[name].options[option] = configfile.get(section, option)
 
@@ -115,15 +114,13 @@ def read_line(daemon):
             help_cmd()
         elif line == 'exit':
             exit_cmd()
-        else:
-            print('* Unkown Syntax: ',line)
 
 def status_cmd(daemon):
     for proc in processes:
         request = proc + '.state'
-        daemon.send_data(request)
-        print('client sending:')
-
+        daemon.send(request)
+        print('client sending:', proc)
+        this = daemon.recv()
 def help_cmd():
     print("Default commands:")
     print("==================")
@@ -160,8 +157,7 @@ def main():
         print('Cannot open configuration file')
     config_checkr(configfile)
     processes_obj(configfile)
-    daemon = socket()
-    daemon.client()
+    daemon = ClientSocket()
     read_line(daemon)
 
 
