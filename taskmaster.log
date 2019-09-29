@@ -1,0 +1,36 @@
+spawned: pwd with pid 20982
+exited: pwd exit status :(20982, 0)
+spawned: ls with pid 20983
+exited: ls exit status :(20983, 256)
+spawned: pwd with pid 21039
+exited: pwd exit status :(21039, 0)
+spawned: ls with pid 21038
+exited: ls exit status :(21038, 256)
+spawned: pwd with pid 21476
+exited: pwd exit status :(21476, 0)
+spawned: ls with pid 21477
+exited: ls exit status :(21477, 256)
+spawned: pwd with pid 21545
+exited: pwd exit status :(21545, 0)
+spawned: ls with pid 21546
+exited: ls exit status :(21546, 256)
+spawned: pwd with pid 21588
+exited: pwd exit status :(21588, 0)
+spawned: ls with pid 21589
+exited: ls exit status :(21589, 256)
+spawned: pwd with pid 23654
+exited: pwd exit status :(23654, 0)
+spawned: ls with pid 23653
+exited: ls exit status :(23653, 256)
+spawned: pwd with pid 23718
+exited: pwd exit status :(23718, 0)
+spawned: ls with pid 23717
+exited: ls exit status :(23717, 256)
+spawned: pwd with pid 23758
+exited: pwd exit status :(23758, 0)
+spawned: ls with pid 23759
+exited: ls exit status :(23759, 256)
+spawned: pwd with pid 23840
+exited: pwd exit status :(23840, 0)
+spawned: ls with pid 23839
+exited: ls exit status :(23839, 15)

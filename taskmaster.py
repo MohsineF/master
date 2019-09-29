@@ -64,7 +64,7 @@ def help_cmd():
     print("==================")
     print("status   start    restart")
     print("stop     reload   exit") 
-    print("pid (of daemon proc)") 
+    print("pid") 
 
 def exit_cmd():
     client.send('exit')

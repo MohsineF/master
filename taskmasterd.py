@@ -31,31 +31,6 @@ processes = dict()
 
 END = 'DAEMON COPY'
 
-class Process():
-    def __init__(self, name):
-        self.name = name
-        self.options = dict(options_sample)
-        self.state = 'STOPPED'
-        self.pid = None
-        self.startsecs = None
-        self.exitcode = None
-    def start(self):
-        child = os.fork()
-        if child == 0:
-            self.redirect()
-            cmd = self.options['command'].split(' ')
-            os.execv(cmd[0], cmd)
-        elif child > 0:
-            self.state = 'STARTING'
-            self.pid = child
-            self.exitcode = os.waitpid(self.pid, os.WNOHANG)
-            if self.exitcode:
-                self.state = 'EXITED'
-    def redirect(self):
-        stdout_fd = os.open(self.options['stdout_logfile'], os.O_WRONLY | os.O_APPEND | os.O_CREAT)
-        stderr_fd = os.open(self.options['stderr_logfile'], os.O_WRONLY | os.O_APPEND | os.O_CREAT)
-        os.dup2(stdout_fd, 1)
-        os.dup2(stderr_fd, 2)
 
 class ServerSocket():
     def __init__(self):
@@ -83,25 +58,69 @@ class ServerSocket():
         message = self.connection.recv(length)
         return message.decode()
 
+class Process():
+    def __init__(self, name):
+        self.name = name
+        self.options = dict(options_sample)
+        self.state = 'STOPPED'
+        self.pid = None
+        self.exitcode = -1
+    def start(self):
+        child = os.fork()
+        if child == 0:
+            #self._redirect()
+            signal.alarm(int(self.options['startsecs']))
+            cmd = self.options['command'].split(' ')
+            os.execv(cmd[0], cmd)
+        elif child > 0:
+            self.state = 'STARTING'
+            self.pid = child
+    def change_state(self, state):
+        self.state = state
+    def _redirect(self):
+        stdout_fd = os.open(self.options['stdout_logfile'], os.O_WRONLY | os.O_APPEND | os.O_CREAT)
+        stderr_fd = os.open(self.options['stderr_logfile'], os.O_WRONLY | os.O_APPEND | os.O_CREAT)
+        os.dup2(stdout_fd, 1)
+        os.dup2(stderr_fd, 2)
+
 def daemon_proc():
     child = os.fork()
     if child == 0:
-        daemon = ServerSocket()
+        print('daemon :', os.getpid())
+        set_signals()
         spawn_processes()
+        daemon = ServerSocket()
         daemon_ear(daemon)
 
 def daemon_ear(daemon):
     while True:
         request = daemon.recv()
         if request == 'status':
-            for proc in processes:
-                daemon.send(processes[proc].name+' exitcode:'+str(processes[proc].exitcode)+' ' + processes[proc].state)
+            for proc in processes.values():
+                daemon.send(proc.name + ' state: ' + proc.state + ' exitcode:  ' + str(proc.exitcode))
             daemon.send(END)
         elif request == 'pid':
             daemon.send(str(os.getpid()))
         elif request == 'exit':
             daemon.close()
             exit(0)
+
+def set_signals():
+        signal.signal(signal.SIGCHLD, sig_handler)
+        signal.signal(signal.SIGALRM, sig_handler)
+        signal.siginterrupt(signal.SIGALRM, False)
+        signal.siginterrupt(signal.SIGCHLD, False)
+
+
+def sig_handler(sig, frame):
+    if sig == signal.SIGCHLD:
+        status = os.wait()
+        pid = status[0]
+        exitcode = status[1]
+        [proc.change_state('EXITED') for proc in processes.values() if proc.pid == pid]
+    elif sig == signal.SIGALRM:
+        print('ALRM')
+    
 
 def spawn_processes():
     for proc_name in processes:
@@ -112,7 +131,7 @@ def spawn_processes():
 def processes_obj(configfile):
     sections = configfile.sections()
     for section in sections:
-        num_procs = int(configfile.get(section, 'numprocs'))
+        num_procs = int(configfile.get(section, 'numprocs')) # don't use configfile anymore use processes OBJECT
         proc_name = section.split(':')[1]
         for i in range(num_procs):
             name = proc_name
