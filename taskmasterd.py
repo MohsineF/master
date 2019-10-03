@@ -6,35 +6,41 @@ import re
 import time
 import signal
 import socket
-import struct 
+import struct
+import sys
 
+process_state = ['STOPPED', 'RUNNING', 'EXITED', 'STOPPING' ,'FATAL', 'UNKNOWN']
 
-process_state = ['STOPPED', 'STARTING', 'RUNNING', 'BACKOFF', 'STOPPING', 'EXITED', 'FATAL', 'UNKNOWN']
+options_sample = [
+        'command',
+        'numprocs',
+        'autostart',
+        'autorestart',
+        'exitcodes',
+        'startsecs',
+        'startretries',
+        'stopsignal',
+        'stopwaitsecs',
+        'environment',
+        'umask',
+        'stdout',
+        'stderr',
+        'directory'
+        ]
 
-options_sample = {
-        'command': '',
-        'numprocs': 1,
-        'autostart': 'true',
-        'autorestart': 'unexpected',
-        'exitcodes': '0',
-        'startsecs': 1,
-        'startretries': 3,
-        'stopsignal': 'TERM',
-        'stopwaitsecs': 10,
-        'environment': '',
-        'umask': '022',
-        'stdout_logfile': '/tmp/stdout_logfile.log',
-        'stderr_logfile': '/tmp/stderr_logfile.log',
-        }
+stop_signal = ['TERM', 'HUP', 'INT', 'QUIT', 'KILL', 'USR1', 'SIGUSR2']
 
 processes = dict()
 
 END = 'DAEMON COPY'
 
+SOCKFILE = '/tmp/taskmaster.sock'
+
+LOGFILE = 'tmp/taskmaster.log'
 
 class ServerSocket():
     def __init__(self):
-        self.sock_address = "/tmp/sockd"
+        self.sock_address = SOCKFILE
         try:
             os.remove(self.sock_address)
         except OSError:
@@ -44,94 +50,156 @@ class ServerSocket():
         self.address = None
         self.socket.bind(self.sock_address)
         self.socket.listen(1)
+        self.accept()
+    def accept(self):
         self.connection, self.address = self.socket.accept()
-    def close(self):
-        self.socket.close()
     def send(self, msg):
-        length = struct.pack('!I', len(msg))
-        self.connection.sendall(length)
-        self.connection.sendall(msg.encode())
+        try:
+            length = struct.pack('!I', len(msg))
+            self.connection.sendall(length)
+            self.connection.sendall(msg.encode())
+        except OSError as err:
+            sys.exit()    
     def recv(self):
         n = self.connection.recv(4)
         if not n: return None
         length, = struct.unpack('!I', n)
         message = self.connection.recv(length)
         return message.decode()
+    def close_connection(self):
+        self.connection.close()
+    def close_socket(self):
+        self.socket.close()
 
 class Process():
     def __init__(self, name):
         self.name = name
-        self.options = dict(options_sample)
+        self.command = None
         self.state = 'STOPPED'
         self.pid = None
-        self.exitcode = -1
+        self.startime = None
+        self.exitcode = None
+        self.numprocs =  1
+        self.startsecs = 3
+        self.startretries = 3
+        self.autostart =  True
+        self.autorestart =  'unexpected'
+        self.exitcodes = 0
+        self.stopsignal = 'TERM'
+        self.stopwaitsecs = 10
+        self.environment = ''
+        self.umask = '022'
+        self.directory = './'
+        self.stdout = '/tmp/stdout_logfile.log'
+        self.stderr = '/tmp/stderr_logfile.log'
+        self.description = str()
     def start(self):
         child = os.fork()
         if child == 0:
-            #self._redirect()
-            signal.alarm(int(self.options['startsecs']))
-            cmd = self.options['command'].split(' ')
+            os.chdir(self.directory)
+            self._redirect()
+            cmd = self.command.split(' ')
             os.execv(cmd[0], cmd)
         elif child > 0:
-            self.state = 'STARTING'
+            self.startime = time.time()
             self.pid = child
-    def change_state(self, state):
-        self.state = state
+            state_handler(self, 'RUNNING')
+            self.description = 'Process spawned with pid: ' + str(self.pid)
     def _redirect(self):
-        stdout_fd = os.open(self.options['stdout_logfile'], os.O_WRONLY | os.O_APPEND | os.O_CREAT)
-        stderr_fd = os.open(self.options['stderr_logfile'], os.O_WRONLY | os.O_APPEND | os.O_CREAT)
+        stdout_fd = os.open(self.stdout, os.O_WRONLY | os.O_APPEND | os.O_CREAT)
+        stderr_fd = os.open(self.stderr, os.O_WRONLY | os.O_APPEND | os.O_CREAT)
         os.dup2(stdout_fd, 1)
         os.dup2(stderr_fd, 2)
+
+
+def state_handler(proc, state):
+        if state == 'EXITED':
+            exitime = time.time()
+            exec_time = exitime - proc.startime
+            if proc.startretries and exec_time < int(proc.startsecs):        
+                proc.startretries = int(proc.startretries) - 1
+                proc.start()
+            elif not proc.startretries and exec_time < int(proc.startsecs):  
+                proc.state = 'FATAL'
+                proc.description = 'Process could not be started successfully'
+            else:     
+                proc.state = 'EXITED'
+                proc.description = 'Process exited after: ' + str(int(exec_time)) + ' seconds'
+                if proc.autorestart == 'true':
+                    proc.start()
+                if proc.autorestart == 'unexpected' and proc.exitcode not in list(proc.exitcodes.replace(',', '')):
+                    proc.start()
+        else:
+            proc.state = state
+
 
 def daemon_proc():
     child = os.fork()
     if child == 0:
-        print('daemon :', os.getpid())
+        print('Daemon PID:', os.getpid())
         set_signals()
         spawn_processes()
         daemon = ServerSocket()
         daemon_ear(daemon)
 
+
 def daemon_ear(daemon):
     while True:
         request = daemon.recv()
+        if request == None:
+            daemon.close_connection()
+            daemon.accept()
+            continue
         if request == 'status':
             for proc in processes.values():
-                daemon.send(proc.name + ' state: ' + proc.state + ' exitcode:  ' + str(proc.exitcode))
+                daemon.send(proc.name  + '  '  + proc.state + '   ' + proc.description) 
             daemon.send(END)
         elif request == 'pid':
             daemon.send(str(os.getpid()))
-        elif request == 'exit':
-            daemon.close()
-            exit(0)
+        elif request == 'quit':
+            daemon.send('Killing child processes...')
+            for proc in processes.values():
+                if proc.state == 'RUNNING':
+                    os.kill(proc.pid, signal.SIGINT) 
+            daemon.send('DOne!')
+            sys.exit()
+
 
 def set_signals():
-        signal.signal(signal.SIGCHLD, sig_handler)
-        signal.signal(signal.SIGALRM, sig_handler)
-        signal.siginterrupt(signal.SIGALRM, False)
-        signal.siginterrupt(signal.SIGCHLD, False)
+    signal.signal(signal.SIGCHLD, sig_handler)
+    signal.siginterrupt(signal.SIGCHLD, False)
 
 
 def sig_handler(sig, frame):
-    if sig == signal.SIGCHLD:
-        status = os.wait()
+    while True:
+        try:
+            status = os.waitpid(-1, os.WNOHANG)
+        except:
+            break
+        if status[0] <= 0:
+            break
         pid = status[0]
         exitcode = status[1]
-        [proc.change_state('EXITED') for proc in processes.values() if proc.pid == pid]
-    elif sig == signal.SIGALRM:
-        print('ALRM')
-    
+        for proc in processes.values():
+            if proc.pid == pid:
+                proc.exitcode = exitcode
+                state_handler(proc, 'EXITED')
+
 
 def spawn_processes():
-    for proc_name in processes:
-        if processes[proc_name].options['autostart'] == 'true':
-            processes[proc_name].start()
+    for proc in processes.values():
+        if proc.autostart == 'true':
+            proc.start()
 
 
 def processes_obj(configfile):
     sections = configfile.sections()
     for section in sections:
-        num_procs = int(configfile.get(section, 'numprocs')) # don't use configfile anymore use processes OBJECT
+        try:
+            num_procs = int(configfile.get(section, 'numprocs'))
+        except:
+            num_procs = 1
+            pass
         proc_name = section.split(':')[1]
         for i in range(num_procs):
             name = proc_name
@@ -139,36 +207,35 @@ def processes_obj(configfile):
                 name += ':' + str(i)
             processes[name] = Process(name) 
             for option in configfile.options(section):
-                processes[name].options[option] = configfile.get(section, option)
+                setattr(processes[name], option, configfile.get(section, option))
+
 
 def config_checkr(configfile):
-    #master section
-    if not configfile.has_section('master') or not configfile.has_option('master', 'logfile') or len(configfile.options('master')) > 1:
-        return (-1)                                     #'Error: config file error'
-    logfile = configfile.get('master', 'logfile')       #logfile
-    configfile.remove_section('master')
-    #program sections 
     pattern = re.compile('program:')
     sections = configfile.sections() 
     for section in sections:
         if not pattern.match(section):
-            return (-1)                                 #'Error: Forbidden section name'
-    #options
+            print('Forbidden section naming format! [', section, ']')
+            return (0)                                 #'Error: Forbidden section name'
     for section in sections:
         options = configfile.options(section)
         for option in options:
-            if not option in options_sample.keys():
-                return (-1)                             #'Error: Option not allowed'
+            if option not in options_sample:
+                print('Option Not Allowed : [', option, '] in [', section , '] section !' )
+                return (0)                              #'Error: Option not allowed'
+    return (1)
+
 
 def main():
     configfile = configparser.ConfigParser()
-    try:
-        configfile.read('taskmaster.conf')
-    except OSError:
-        print('Cannot open configuration file')
-    config_checkr(configfile)
+    configfile.read('./taskmaster.conf')
+    
+    if not config_checkr(configfile):
+        sys.exit()
+
     processes_obj(configfile)
     daemon_proc()
+
 
 if __name__ == "__main__":
     main()
