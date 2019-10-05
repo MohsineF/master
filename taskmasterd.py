@@ -8,6 +8,7 @@ import signal
 import socket
 import struct
 import sys
+import errno
 
 process_state = ['STOPPED', 'RUNNING', 'EXITED', 'STOPPING' ,'FATAL', 'UNKNOWN']
 
@@ -28,7 +29,15 @@ options_sample = [
         'directory'
         ]
 
-stop_signal = ['TERM', 'HUP', 'INT', 'QUIT', 'KILL', 'USR1', 'SIGUSR2']
+stop_signals = {
+        'SIGTERM': 15,
+        'SIGHUP': 1,
+        'SIGINT': 2,
+        'SIGQUIT': 3,
+        'SIGKILL': 9,
+        'SIGUSR1': 30,
+        'SIGUSR2': 31
+        }
 
 processes = dict()
 
@@ -52,24 +61,36 @@ class ServerSocket():
         self.socket.listen(1)
         self.accept()
     def accept(self):
-        self.connection, self.address = self.socket.accept()
+        try:
+            self.connection, self.address = self.socket.accept()
+        except socket.error as err:
+            if err == errno.EINTR:
+                pass
     def send(self, msg):
         try:
             length = struct.pack('!I', len(msg))
             self.connection.sendall(length)
             self.connection.sendall(msg.encode())
-        except OSError as err:
+        except (OSError ,socket.error) as err:
+            if err == errno.EINTR:
+                pass
             sys.exit()    
     def recv(self):
-        n = self.connection.recv(4)
-        if not n: return None
+        try:
+            n = self.connection.recv(4)
+            if not n: return None
+        except (OSError, socket.error, AttributeError) as err:
+            pass
+            return None
         length, = struct.unpack('!I', n)
         message = self.connection.recv(length)
         return message.decode()
     def close_connection(self):
-        self.connection.close()
+        if self.connection is not None:
+            self.connection.close()
     def close_socket(self):
-        self.socket.close()
+        if self.socket is not None:
+            self.socket.close()
 
 class Process():
     def __init__(self, name):
@@ -85,7 +106,7 @@ class Process():
         self.autostart =  True
         self.autorestart =  'unexpected'
         self.exitcodes = 0
-        self.stopsignal = 'TERM'
+        self.stopsignal = 'SIGTERM'
         self.stopwaitsecs = 10
         self.environment = ''
         self.umask = '022'
@@ -104,7 +125,18 @@ class Process():
             self.startime = time.time()
             self.pid = child
             state_handler(self, 'RUNNING')
-            self.description = 'Process spawned with pid: ' + str(self.pid)
+    def stop(self):
+        state_handler(self, 'STOPPING')
+        print(stop_signals[self.stopsignal])
+        os.kill(self.pid, stop_signals[self.stopsignal])
+    def restart(self):
+        if self.state == 'RUNNING':
+            self.stop()
+        if self.state == 'STOPPING':
+            self.pid, self.exitcode = os.waitpid(self.pid, 0)
+            print(self.pid, self.exitcode)
+            state_handler(self, 'STOPPED')
+        self.start()
     def _redirect(self):
         stdout_fd = os.open(self.stdout, os.O_WRONLY | os.O_APPEND | os.O_CREAT)
         stderr_fd = os.open(self.stderr, os.O_WRONLY | os.O_APPEND | os.O_CREAT)
@@ -123,14 +155,22 @@ def state_handler(proc, state):
                 proc.state = 'FATAL'
                 proc.description = 'Process could not be started successfully'
             else:     
-                proc.state = 'EXITED'
+                proc.state = state
                 proc.description = 'Process exited after: ' + str(int(exec_time)) + ' seconds'
                 if proc.autorestart == 'true':
                     proc.start()
-                if proc.autorestart == 'unexpected' and proc.exitcode not in list(proc.exitcodes.replace(',', '')):
+                elif proc.autorestart == 'unexpected' and proc.exitcode not in list(proc.exitcodes.replace(',', '')):
                     proc.start()
-        else:
+        elif state == 'STOPPED':
+            if proc.state == 'STOPPING':
+                proc.state = state
+                proc.description = 'Process stopped with ' + proc.stopsignal + ' signal'
+        elif state == 'RUNNING':
             proc.state = state
+            proc.description = 'Process spawned with pid: ' + str(proc.pid) 
+        elif state == 'STOPPING':
+            proc.state = state
+            proc.description = 'Process stopping ' + proc.stopsignal + ' signal' 
 
 
 def daemon_proc():
@@ -140,8 +180,7 @@ def daemon_proc():
         set_signals()
         spawn_processes()
         daemon = ServerSocket()
-        daemon_ear(daemon)
-
+        daemon_ear(daemon) 
 
 def daemon_ear(daemon):
     while True:
@@ -149,41 +188,66 @@ def daemon_ear(daemon):
         if request == None:
             daemon.close_connection()
             daemon.accept()
-            continue
-        if request == 'status':
-            for proc in processes.values():
-                daemon.send(proc.name  + '  '  + proc.state + '   ' + proc.description) 
-            daemon.send(END)
-        elif request == 'pid':
-            daemon.send(str(os.getpid()))
-        elif request == 'quit':
-            daemon.send('Killing child processes...')
-            for proc in processes.values():
-                if proc.state == 'RUNNING':
-                    os.kill(proc.pid, signal.SIGINT) 
-            daemon.send('DOne!')
-            sys.exit()
-
+            continue 
+        request = list(request.split(' '))
+        request_handling(daemon, request)
 
 def set_signals():
     signal.signal(signal.SIGCHLD, sig_handler)
-    signal.siginterrupt(signal.SIGCHLD, False)
 
 
 def sig_handler(sig, frame):
-    while True:
-        try:
-            status = os.waitpid(-1, os.WNOHANG)
-        except:
-            break
-        if status[0] <= 0:
-            break
-        pid = status[0]
-        exitcode = status[1]
+    if sig == signal.SIGCHLD:
+        while True:
+            try:
+                status = os.waitpid(-1, os.WNOHANG)
+            except:
+                break
+            if status[0] <= 0:
+                break
+            pid = status[0]
+            exitcode = status[1]
+            print(pid)
+            for proc in processes.values():
+                if proc.pid == pid:
+                    proc.exitcode = exitcode
+                    if proc.state == 'STOPPING':
+                        state_handler(proc,'STOPPED')
+                    else:
+                        state_handler(proc, 'EXITED')
+
+
+def request_handling(daemon, request):
+    if len(request) == 2 and request[1] not in processes.keys():
+        daemon.send('No such program name ! type "status"')
+    elif request[0] == 'status':
         for proc in processes.values():
-            if proc.pid == pid:
-                proc.exitcode = exitcode
-                state_handler(proc, 'EXITED')
+            daemon.send(proc.name  + '  '  + proc.state + '   ' + proc.description) 
+        daemon.send(END)
+    elif request[0] == 'start':
+        if processes[request[1]].state != 'RUNNING':
+            daemon.send('Starting program...')
+            processes[request[1]].start()
+        else:
+            daemon.send('Program already Running !')
+    elif request[0] == 'stop':
+        if processes[request[1]].state == 'RUNNING':
+            daemon.send('Stopping program...')
+            processes[request[1]].stop()
+        else:
+            daemon.send('Program not running !')
+    elif request[0] == 'restart':
+        daemon.send('Restarting program: ' + request[1])
+        processes[request[1]].restart()
+    elif request[0] == 'pid':
+        daemon.send(str(os.getpid()))
+    elif request[0] == 'quit':
+        daemon.send('Killing child processes...')
+        for proc in processes.values():
+            if proc.state == 'RUNNING':
+                os.kill(proc.pid, signal.SIGKILL) 
+        daemon.send('DOne!')
+        sys.exit()
 
 
 def spawn_processes():
@@ -229,7 +293,7 @@ def config_checkr(configfile):
 def main():
     configfile = configparser.ConfigParser()
     configfile.read('./taskmaster.conf')
-    
+
     if not config_checkr(configfile):
         sys.exit()
 
