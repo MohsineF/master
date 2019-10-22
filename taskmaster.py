@@ -6,52 +6,26 @@ import struct
 import signal
 import sys
 import errno
+from tasksocket import *
 
-END = 'DAEMON COPY'
-
-SOCKFILE = '/tmp/taskmaster.sock'
-
-class ClientSocket():
-    def __init__(self):
-        self.sock_address = SOCKFILE
-        self.connect()
-    def connect(self):
-        self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        try:
-            self.socket.connect(self.sock_address)
-        except OSError as err:
-            print('No Daemon. Try Starting It!')
-            sys.exit()
-    def close(self):
-        self.socket.close()
-    def send(self, msg):
-        try:
-            length = struct.pack('!I', len(msg))
-            self.socket.sendall(length)
-            self.socket.sendall(msg.encode())
-        except OSError as err:
-            print(err)
-            if err == errno.EPIPE:
-                pass
-                self.connect()
-                return None 
-            print('Daemon process killed :( . Try Restarting It!')
-            sys.exit()
-    def recv(self):
-        n = self.socket.recv(4)
-        if not n: return None
-        length, = struct.unpack('!I', n)
-        message = self.socket.recv(length)
-        return message.decode()
 
 client = ClientSocket()
 
-def sig_handler(sig, frame):
-    exit_cmd()
-
 def read_line():
     while True:
-        line = input('taskmaster> ').strip().split(' ')
+        r, w = os.pipe()
+        if os.fork() == 0:
+            os.close(r)
+            os.dup2(w, 2)
+            os.close(w)
+            os.execv("./a.out", list("./a.out"))
+            sys.exit()
+        else:
+            os.close(w)
+            rd = os.fdopen(r) 
+            line = rd.read().split(' ')
+            rd.close()
+        
         if len(line) > 2 or len(line) == 0:
             continue
         if line[0] == 'status':
@@ -64,13 +38,15 @@ def read_line():
             restart_cmd(line)
         elif line[0] == 'stop':
             stop_cmd(line)
+        elif line[0] == 'reload':
+            reload_cmd(line)
         elif line[0] == 'quit':
             quit_cmd()
         elif line[0] == 'help':
             help_cmd()
         elif line[0] == 'exit':
             exit_cmd()
-        else:
+        elif line[0] != '':
             print('No such command: type "help"')
 
 
@@ -99,6 +75,7 @@ def restart_cmd(line):
         return
     client.send('restart ' + line[1])
     print(client.recv())
+    print(client.recv())
 
 
 def stop_cmd(line):
@@ -107,16 +84,22 @@ def stop_cmd(line):
         return
     client.send('stop ' + line[1])
     print(client.recv())
+    print(client.recv())
 
+def reload_cmd(line):
+    if len(line) > 1:
+        print('Reload has no second argument')
+        return
+    client.send('reload')
+    print(client.recv())
 
 def pid_cmd():
     client.send('pid')
-    pid = client.recv()
-    print('Daemon PID: ',pid)
+    print('Daemon PID: ', client.recv())
 
 def help_cmd():
     print("Default commands:")
-    print("==================")
+    print("=================")
     print("status   start    restart")
     print("stop     reload   exit(shell)") 
     print("pid      quit(everything)") 
@@ -125,13 +108,23 @@ def quit_cmd():
     client.send('quit')
     print(client.recv())
     print(client.recv())
+    client.close()
     sys.exit()
 
 
 def exit_cmd():
+    client.send('exit')
     client.close()
     sys.exit()
 
+def sig_handler(sig, frame):
+    exit_cmd()
+
+
 if __name__ == "__main__":
     signal.signal(signal.SIGINT, sig_handler)
+    signal.signal(signal.SIGTSTP, sig_handler)
+    signal.signal(signal.SIGHUP, sig_handler)
+    signal.signal(signal.SIGQUIT, sig_handler)
+    signal.signal(signal.SIGTERM, sig_handler)
     read_line()
