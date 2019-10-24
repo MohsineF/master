@@ -1,4 +1,4 @@
-#include "readline/includes/readcline.h"
+#include "readcline/includes/readcline.h"
 
 
 void	init_terminal_data(void)
@@ -41,13 +41,19 @@ void		init_terminal(struct termios *s)
 	set_input_mode();
 }
 
-int main (int argc, char **argv) {
-
+void	readcline_handler()
+{
 	struct termios saved_attr;
 	init_terminal(&saved_attr);
 	char *input = readcline("taskmaster> ", NULL, NULL);
-
 	ft_putstr_fd(input, 2);
-	close(ft_atoi(argv[1]));
 	reset_input_mode(&saved_attr);
+	close(2);
+	sleep(3600);
+}
+
+int main ()
+{
+	signal(30, readcline_handler);
+	sleep(3600);
 }

@@ -16,8 +16,24 @@ client = ClientSocket()
 
        
 def read_line():
+    r, w = os.pipe()
+    rd = os.fdopen(r) 
+    read_pid = os.fork()
+    if read_pid == 0:
+        os.close(r)
+        os.dup2(w, 2)
+        os.close(w)
+        os.execv("./a.out", list("./a.out"))
+        sys.exit()
+    os.close(w)
+    time.sleep(1)
     while True:
-        line = list(input("taskmaster> ").split(' '))
+        #line = list(input("taskmaster> ").split(' '))
+        
+        os.kill(read_pid, 30)
+        line = rd.readline().split(' ')
+        print("line: ", line)
+        time.sleep(2)
         if len(line) > 2 or len(line) == 0:
             continue
         if line[0] == 'status':
