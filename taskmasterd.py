@@ -51,9 +51,9 @@ class Process():
         self.name = name
         self.command = None
         self.state = 'STOPPED'
-        self.pid = None
-        self.startime = None
-        self.exitcode = None
+        self.pid = int()
+        self.startime = float()
+        self.exitcode = int()
         self.numprocs =  1
         self.startsecs = 3
         self.startretries = 3
@@ -69,10 +69,11 @@ class Process():
         self.stderr = '/tmp/stderr_logfile.log'
         self.description = 'Program not started yet !'
         self.retries_counter = 0
-        self.stopwait_counter = 0
     def start(self):
-        child = os.fork()
-        if child == 0:
+        self.startime = time.time()
+        self.pid = os.fork()
+        if self.pid == 0:
+            time.sleep(1)
             os.chdir(self.directory)
             os.umask(int(self.umask))
             self._env()
@@ -80,12 +81,10 @@ class Process():
             cmd = self.command.split(' ')
             try:
                 os.execv(cmd[0], cmd)
-            except FileNotFoundError as err:
-                sys.stderr.write("No such command !\n")
+            except FileNotFoundError:
+                sys.stderr.write("Command Not Found!\n")
                 sys.exit()
-        elif child > 0:
-            self.startime = time.time()
-            self.pid = child
+        elif self.pid > 0:
             if self.state != 'RUNNING': 
                 self.retries_counter = 0
             state_handler(self, 'RUNNING')
@@ -94,8 +93,10 @@ class Process():
         os.kill(self.pid, stop_signals[self.stopsignal])        
         time.sleep(float(self.stopwaitsecs))
         if self.state == 'STOPPING':
-            tasklog('KILL', self.name)
+            tasklog('KILL', self.name, '')
             os.kill(self.pid, stop_signals['SIGKILL'])
+        else:
+            tasklog('STOP', self.name, self.stopsignal)
     def _redirect(self):
         try:
             if self.stdout == 'NONE':
@@ -105,7 +106,7 @@ class Process():
                 os.dup2(stdout_fd, 1)
         except OSError as err:
             if err.errno == errno.EACCES:
-                tasklog('EACCES', 'configfile')
+                tasklog('EACCES', 'configfile', '')
                 os.close(1)
         try:
             if self.stderr == 'NONE':
@@ -115,7 +116,7 @@ class Process():
                 os.dup2(stderr_fd, 2)
         except OSError as err:
             if err.errno == errno.EACCES:
-                tasklog('EACCES','configfile')
+                tasklog('EACCES','configfile', '')
                 os.close(2)
     def _env(self):
         env = self.environment.split(',')
@@ -128,21 +129,12 @@ class Process():
 def daemon_proc():
     child = os.fork()
     if child == 0:
+        tasklog('DAEMON', 'taskmasterd', str(os.getpid()))
         print('Daemon PID:', os.getpid())
-        tasklog('DAEMON', 'taskmasterd')
         set_signals()
         spawn_processes()
         daemon = ServerSocket()
         daemon_ear(daemon) 
-
-
-def daemon_ear(daemon):
-    while True:
-        request = daemon.recv()
-        if request == None:
-            continue
-        request = list(request.split(' '))
-        request_handler(daemon, request)
 
 
 def set_signals():
@@ -155,7 +147,7 @@ def sig_handler(sig, frame):
         while True:
             try:
                 status = os.waitpid(-1, os.WNOHANG)
-            except:
+            except ChildProcessError as err:
                 break
             if status[0] <= 0:
                 break
@@ -168,45 +160,54 @@ def sig_handler(sig, frame):
                         state_handler(proc,'STOPPED')
                     else:
                         state_handler(proc, 'EXITED')
-    elif sig == signal.SIGHUP:
+    elif sig == signal.SIGHUP:  #reload 
+        tasklog('RELOAD', 'taskmasterd', '')
         kill_processes()
         if setup_config():
             spawn_processes()
         else:
             sys.exit()
 
+
 def state_handler(proc, state):
     if state == 'EXITED':
-        exitime = time.time()
-        exec_time = exitime - proc.startime
-        if proc.retries_counter < int(proc.startretries) and exec_time < int(proc.startsecs):
-            tasklog('BACKOFF', proc.name)
+        exec_time = int(time.time() - proc.startime) - 1
+        if proc.retries_counter < int(proc.startretries) and int(exec_time) < int(proc.startsecs):
+            tasklog('BACKOFF', proc.name, str(proc.exitcode))
             proc.retries_counter += 1
             proc.start()
-        elif proc.retries_counter == int(proc.startretries) and exec_time < int(proc.startsecs):
-            tasklog('FATAL', proc.name)
+        elif proc.retries_counter == int(proc.startretries) and int(exec_time) < int(proc.startsecs):
+            tasklog('FATAL', proc.name, '')
             proc.state = 'FATAL'
             proc.description = 'Process could not be started successfully'
         else:     
-            tasklog('EXIT', proc.name)
-            proc.state = state
+            tasklog('EXIT', proc.name, str(proc.exitcode))
+            proc.state = 'EXITED'
             proc.description = 'Process exited after: ' + str(int(exec_time)) + ' seconds'
             if proc.autorestart == 'true':
                 proc.start()
             elif proc.autorestart == 'unexpected' and proc.exitcode not in list(proc.exitcodes.replace(',', '')):
                 proc.start()
     elif state == 'STOPPED':
-        tasklog('STOP', proc.name)
         proc.state = state
         proc.description = 'Process stopped after a stop request'
     elif state == 'RUNNING':
-        tasklog('SPAWN', proc.name)
+        tasklog('SPAWN', proc.name, str(proc.pid))
         proc.state = state
         proc.description = 'Process spawned with pid: ' + str(proc.pid)
     elif state == 'STOPPING':
-        tasklog('WAITSTOP', proc.name)
+        tasklog('WAITSTOP', proc.name, proc.stopsignal)
         proc.state = state
-        proc.description = 'Process stopping with a signal' 
+        proc.description = 'Process stopping with a signal'
+
+
+def daemon_ear(daemon):
+    while True:
+        request = daemon.recv()
+        if request == None:
+            continue
+        request = list(request.split(' '))
+        request_handler(daemon, request)
 
 
 def request_handler(daemon, request):
@@ -228,17 +229,18 @@ def request_handler(daemon, request):
         daemon.close_connection()
     elif request[0] == 'quit':
         quit_request(daemon)
+    daemon.send(END)
 
 
 def status_request(daemon):
     for proc in processes.values():
         daemon.send(proc.name  + '  '  + proc.state + '   ' + proc.description) 
-    daemon.send(END)
 
 def start_request(daemon, request):
     if processes[request[1]].state != 'RUNNING':
         daemon.send('Starting program...')
         processes[request[1]].start()
+        daemon.send('Program started !')
     else:
         daemon.send('Program already Running !')
 
@@ -249,6 +251,7 @@ def stop_request(daemon, request):
         daemon.send('Program stopped !')
     else:
         daemon.send('Program not running !')
+
 
 def restart_request(daemon, request):
     daemon.send('Restarting program...')
@@ -261,6 +264,7 @@ def restart_request(daemon, request):
 def reload_request(daemon):
     kill_processes()
     if setup_config():
+        daemon.send('Reloading programs...')
         spawn_processes()
         daemon.send('Programs reloaded !') 
     else:
@@ -271,7 +275,7 @@ def reload_request(daemon):
 def quit_request(daemon):
     daemon.send('Killing child processes...')
     kill_processes()
-    tasklog('QUIT', 'taskmasterd')
+    tasklog('QUIT', 'taskmasterd', '')
     daemon.send('DOne!')
     daemon.close_socket()
     sys.exit()
@@ -293,12 +297,12 @@ def kill_processes():
 def processes_obj(configfile):
     sections = configfile.sections()
     for section in sections:
+        proc_name = section.split(':')[1]
         try:
             num_procs = int(configfile.get(section, 'numprocs'))
         except:
             num_procs = 1
             pass
-        proc_name = section.split(':')[1]
         for i in range(num_procs):
             name = proc_name
             if num_procs > 1:
@@ -312,19 +316,19 @@ def config_checkr():
     configfile = configparser.RawConfigParser()
     conf = configfile.read(CONFIGFILE)
     if not conf:
-        tasklog('CONFIG', 'config')
+        tasklog('CONFIG', 'config', '')
         return (0)
     pattern = re.compile('program:')
     sections = configfile.sections() 
     for section in sections:
         if not pattern.match(section):
-            tasklog('SECTION', 'config')
+            tasklog('SECTION', 'config', '')
             return (0)                                
     for section in sections:
         options = configfile.options(section)
         for option in options:
             if option not in options_sample:
-                tasklog('OPTION', 'config')
+                tasklog('OPTION', 'config', '')
                 return (0)                              
     return (configfile)
 
