@@ -12,11 +12,11 @@ logs = {
         'STOP': ('INFO','process stopped with signal:'),
         'KILL': ('WARN', 'process killed with SIGKILL :('),
         'FATAL': ('INFO', 'too many start retries too quickly, process entered FATAL state'),
-        'RELOAD' : ('WARN', 'received SIGHUP indicating reload request'),
+        'RELOAD' : ('WARN', 'received command/signal indicating reload request'),
         'EACCES': ('WARN', 'couldn\'t open log file for process'),
         'CONFIG': ('ERROR', 'couldn\'t open configuration file'),
         'SECTION': ('ERROR', 'section naming format not allowed in your configuration file !'),
-        'OPTION': ('ERROR', 'option not allowed in your configuration file !'),
+        'OPTION': ('ERROR', 'option Key or Value not allowed in your configuration file !'),
         'QUIT': ('INFO','quitting daemon process')
         }
 
@@ -25,4 +25,4 @@ def tasklog(log, proc, info):
         logfile = open(LOGFILE, 'a')
     else:
         logfile = open(LOGFILE, 'w')
-    logfile.write(time.asctime() + ' ' + logs[log][0] + ' ' + proc + ': ' + logs[log][1] + info +'\n')
+    logfile.write(time.asctime() + ' ' + logs[log][0] + ' ' + proc + ' : ' + logs[log][1] + ' ' + info +'\n')
