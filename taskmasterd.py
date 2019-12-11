@@ -86,7 +86,6 @@ class Process():
         except BlockingIOError as err:
             pass
         if self.pid == 0:
-            time.sleep(1)
             self._env()
             self._redirect()
             os.umask(int(self.umask))
@@ -96,6 +95,7 @@ class Process():
                 sys.stderr.write(self.name + ":" + self.directory + " : Directory name Not Found!\n")
             cmd = self.command.split(' ')
             try:
+                time.sleep(1)
                 os.execv(cmd[0], cmd)
             except FileNotFoundError:
                 sys.stderr.write(self.name + ":" + self.command + " : Program name Not Found!\n")
@@ -267,14 +267,14 @@ def reload_request():
         kill_processes()
         sys.exit()
     objc = create_processes(configfile)
-    similar_procs = [proc.name for proc in processes.values() for obj in objc.values() if obj.title == proc.title and obj == proc and proc.state == 'RUNNING']
-    deleted_procs = [proc.name for proc in processes.values() if proc.name not in similar_procs] #changed programs should get deleted
+    unchanged_run_procs = [proc.name for proc in processes.values() for obj in objc.values() if obj.title == proc.title and obj == proc and proc.state == 'RUNNING']
+    deleted_procs = [proc.name for proc in processes.values() if proc.name not in unchanged_run_procs] #changed programs should get deleted
     for name in deleted_procs:
         if processes[name].state == 'RUNNING':
             processes[name].stop()
         del processes[name]
     for new in objc.values():
-        if new.name not in similar_procs:
+        if new.name not in unchanged_run_procs:
             processes[new.name] = copy.deepcopy(new)
             if processes[new.name].autostart == 'true':
                 processes[new.name].start()
