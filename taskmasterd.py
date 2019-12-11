@@ -81,7 +81,10 @@ class Process():
         and self.stdout == other.stdout and self.stderr == other.stderr)
     def start(self): 
         self.startime = time.time()
-        self.pid = os.fork()
+        try:
+            self.pid = os.fork()
+        except BlockingIOError as err:
+            pass
         if self.pid == 0:
             time.sleep(1)
             self._env()

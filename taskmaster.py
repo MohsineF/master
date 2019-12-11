@@ -2,6 +2,7 @@
 
 import socket
 import os
+import readline
 import struct
 import signal
 import sys
@@ -12,28 +13,30 @@ from tasksocket import *
 
 client = ClientSocket()
 
-#os.system("gcc taskread.c readline/libs/*.a readline/readcline.a -ltermcap -o taskclt")
 
-       
+builtins = [
+        'start',
+        'restart',
+        'stop',
+        'reload',
+        'quit',
+        'exit',
+        'help',
+        'pid'
+        ]
+
+def completion(text, state):
+    options = [i for i in builtins if i.startswith(text)]
+    if state < len(options):
+        return options[state]
+    else:
+        return None
+
+readline.parse_and_bind("bind ^I rl_complete")
+
 def read_line():
-    '''r, w = os.pipe()
-    rd = os.fdopen(r) 
-    read_pid = os.fork()
-    if read_pid == 0:
-        os.close(r)
-        os.dup2(w, 2)
-        os.close(w)
-        os.execv("./a.out", list("./a.out"))
-        sys.exit()
-    os.close(w)
-    time.sleep(1)'''
     while True:
         line = list(input("taskmaster> ").split(' '))
-        
-        '''os.kill(read_pid, 30)
-        line = rd.readline().split(' ')
-        print("line: ", line)
-        time.sleep(2)'''
         if len(line) > 2 or len(line) == 0:
             continue
         if line[0] == 'status':
@@ -71,7 +74,7 @@ def status_cmd(line):
     else:
         print('Status has no second agrument')
         return 
-    
+
 def start_cmd(line):
     if len(line) == 2:
         client.send(' '.join(line))
@@ -99,6 +102,7 @@ def stop_cmd(line):
 def reload_cmd(line):
     if len(line) == 1:
         client.send(' '.join(line))
+
         recv()
     else:
         print('Reload has no second argument')
@@ -144,4 +148,5 @@ if __name__ == "__main__":
     signal.signal(signal.SIGHUP, sig_handler)
     signal.signal(signal.SIGQUIT, sig_handler)
     signal.signal(signal.SIGTERM, sig_handler)
+    readline.set_completer(completion)
     read_line()
